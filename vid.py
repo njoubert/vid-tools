@@ -28,6 +28,8 @@ import time
 import datetime
 import dateutil.parser
 import re
+import logging
+import pathlib
 # import itertools
 # import functools
 # import random
@@ -41,50 +43,86 @@ import subprocess
 # print(sys.version)
 
 if __name__ == "__main__":
-  parser = argparse.ArgumentParser(description='Process Raw Videos')
-  parser.add_argument('--datetime')
-  parser.add_argument('--filetype', default="MP4")
-  parser.add_argument('folder')
-  # parser.add_argument('integers', metavar='N', type=int, nargs='+',
-  #                   help='an integer for the accumulator')
+  logging.basicConfig(level=logging.DEBUG)
+  parser = argparse.ArgumentParser(description='Extracts clips at given datetime and duration from all clips in a folder tree')
+  parser.add_argument('--datetime', required=True, help='Date and Time of Moment of Interest')
+  parser.add_argument('--duration', required=True, help='Duration of Moment of Interest')
+  parser.add_argument('--output', help='Location of final clips. Creates folder if it does not exist. Does not cut if not specified')
+  parser.add_argument('-f', '--force', action="store_true")
+  parser.add_argument('folder', help='Top of folder hierarchy to scan')
   args = parser.parse_args()
 
-  date_time_obj = dateutil.parser.parse(args.datetime)
-  
-  # Get all the video files
-  f = []
-  filepaths = []
+  moi_timestamp = dateutil.parser.parse(args.datetime)
+  logging.debug(moi_timestamp)
+
+  # First we get offsets
+  offsets = {}
   for root, dirs, files in os.walk(args.folder):
-    for file in files:
-      if file.endswith(args.filetype):
-        f.append(file)
-        filepaths.append(os.path.join(args.folder, file))
+    offset = datetime.timedelta(seconds=0)
+    for filename in files:
+      filepath = os.path.join(root, filename)
+      relpath = os.path.relpath(filepath, args.folder)
+      if filename == "offset.txt":
+        with open(filepath, 'r') as offset_file:
+          t = offset_file.read().split(":")
+          offset = datetime.timedelta(hours=float(t[0]), minutes=float(t[1]), seconds=float(t[2]))
+          offsets[root] = offset
+        logging.warning(f'Found offset {offset} for directory {root}')
 
-  # Get the start time of this clip. 
-  # GoPro has special stuff which might be better. For the moment we just use the format tag.
+  # Get a list of all the files in a directory tree as (name, full path) tuples
+  foi = []
+  for root, dirs, files in os.walk(args.folder):
+    offset = datetime.timedelta(seconds=0)
+    if root in offsets:
+      offset = offsets[root]
+    for filename in files:
+      filepath = os.path.join(root, filename)
+      relpath = os.path.relpath(filepath, args.folder) 
+      foi.append({'filename':filename, 'relpath':relpath, 'filepath': filepath, 'offset':offset})
 
-  # def get_creation(filepath):
-  #   cmd = "ffprobe -v error -show_entries format_tags=creation_time -of default=noprint_wrappers=1:nokey=1 \"" + filepath +  "\""
-  #   return subprocess.check_output(cmd, shell=True)
+  # Process all files with ffprobe, finding the creation date and duration
+  # Filter out non-ffmpeg compatible files
+  def ffprobe_output(f):
+    cmd = "ffprobe -v error -select_streams v:0 -show_entries stream=duration:stream_tags=creation_time -of default=noprint_wrappers=1 \"" + f['filepath'] +  "\""
+    try:
+      FNULL = open(os.devnull, 'w')
+      lines = subprocess.check_output(cmd, stderr=FNULL, shell=True)
+      lines = re.split('=|\n| ',str(lines.decode("utf-8")).strip().replace('TAG:', ''))
+      it = iter(lines) 
+      metadata = dict(zip(it, it))
+      metadata['creation_time'] = dateutil.parser.parse(metadata['creation_time']) + f['offset']
+      metadata['end_time'] = metadata['creation_time'] + datetime.timedelta(seconds=float(metadata['duration']))
+      f.update(metadata)
+      logging.info(f"ffprobe processed '{f['relpath']}' {f['creation_time']} {f['duration']} {f['offset']} ")
+      return f
+    except:
+      return None
 
-  # def get_duration(filepath):
-  #   cmd = "ffprobe -v error -select_streams v:0 -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 \"" + filepath +  "\""
-  #   return subprocess.check_output(cmd, shell=True)
+  logging.info('Filtering non-media files')
+  ffprobe = filter(lambda f: f is not None, [ffprobe_output(f) for f in foi])
 
-  def ffprobe_output(filepath):
-    cmd = "ffprobe -v error -select_streams v:0 -show_entries stream=duration:stream_tags=creation_time -of default=noprint_wrappers=1 \"" + filepath +  "\""
-    lines = subprocess.check_output(cmd, shell=True)
-    lines = re.split('=|\n| ',str(lines.decode("utf-8")).strip().replace('TAG:', ''))
-    it = iter(lines) 
-    lines = dict(zip(it, it))
-    print(lines)
-    return lines
+  # Find all files and offsets into each file that correspond to the given datetime
+  logging.info('Finding matching files')
+  matching_files = list(filter(lambda f: f['creation_time'] <= moi_timestamp <= f['end_time'], ffprobe))
+  print("### Matching Files: ###")
+  for f in matching_files:
+    offset_in = moi_timestamp - f['creation_time']
+    print(f['relpath'], offset_in)
 
-
-
-  ffprobe = [ffprobe_output(fp) for fp in filepaths]
-  # creation = [get_creation(fp) for fp in filepaths]
-  # duration = [get_duration(fp) for fp in filepaths] 
+  if (args.output):
+    output_root = os.path.join(args.output, args.datetime)
+    logging.info(f"Creating clips in f{args.output}")
+    try:
+      pathlib.Path(output_root).mkdir(parents=True, exist_ok=args.force)
+    except FileExistsError:
+      logging.error(f"The output path already exists. Enable --force if you want to override")
+      sys.exit(1)
+    for f in matching_files:
+      output_filepath = os.path.join(output_root, f['relpath'].replace("/","_"))
+      clip_offset = moi_timestamp - f['creation_time']
+      cmd = f"ffmpeg -ss {clip_offset} -i \"{f['filepath']}\" -t {args.duration} -c copy \"{output_filepath}\""
+      logging.info(f"Running {cmd}")
+      lines = subprocess.check_output(cmd, shell=True)
 
 
 
