@@ -3,14 +3,16 @@
 ## Example Uses
 
 ```
-./vid.py --datetime "2020-01-09T11:43:26.000000Z" --duration 10 /Volumes/\[2019\]\ Soepel/Footage/2020-01-09\ GOM/
+./vid.py -f --datetime "2020-01-09T10:43:28.000000Z" --duration 19 --output /Volumes/\[2019\]\ Soepel/Footage/2020-01-09\ GOM/Clips/ /Volumes/\[2019\]\ Soepel/Footage/2020-01-09\ GOM/Raw/
 ```
 To fix time offsets, you can create a `offset.txt` file per folder. This contains exactly one line containing an `HH:MM:SS.SSS` offset.
 
-**Caveats:**
+**Caveats / Things To Improve:**
 
 - This only shows clips that have video at that starting point. It does not select clips that fall within the duration but only after the start. 
 - This does not manage having to cross clip boundaries.
+- Trimming usually snaps to the nearest keyframe which might have multiple seconds of error, messing up alignment
+- Post-produced video does not have the creation_date of the world clock, so have to be manually aligned. 
 
 
 ## Step 1: Given timestamp and folder, open the video at that timestamp.
@@ -59,6 +61,11 @@ ffmpeg -i Angle1_OTSGP_GH010004.MP4 -i Angle2_FrontGP_GH010003.MP4 -i Angle3_Can
 Merge four videos, high quality fast GPU encode
 ```
 ffmpeg -i Angle1_OTSGP_GH010004.MP4 -i Angle2_FrontGP_GH010003.MP4 -i Angle3_Canon_MVI_1292.MOV -i Angle4_Cell_IMG_8087_cones_external.MOV -filter_complex "[0:v]crop=1920:1080:436:220[lt];[1:v]crop=1920:1080:436:220[rt];[lt][rt]hstack[top];[2:v][3:v]hstack[bottom];[top][bottom]vstack[v]" -map "[v]" -map 0:a -c:v hevc_videotoolbox -b:v 10000k -tag:v hvc1  output2.mp4
+```
+
+Merge THREE videos, two up top, wide down below
+```
+ffmpeg -i Angle1_OTSGP_GH030004.MP4 -i Angle2_FrontGP_GH030003.MP4 -i 20200109_ScenarioA_A5_OcsCameraContinuousPluginFlashyResized.mp4 -filter_complex "[0:v]crop=1920:1080:436:220[lt];[1:v]crop=1920:1080:436:220[rt];[rt][lt]hstack[top];[2:v]scale=3840:1080[bottom];[top][bottom]vstack[v]" -map "[v]" -map 0:a -c:v hevc_videotoolbox -b:v 10000k -tag:v hvc1  output2.mp4
 ```
 
 # References
